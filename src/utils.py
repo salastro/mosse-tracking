@@ -32,3 +32,14 @@ def fft_spectrum(img):
     magnitude = np.log(np.abs(fshift) + 1)
     magnitude = cv2.normalize(magnitude, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     return magnitude
+
+
+def clamp_rect(rect, frame_shape):
+    x, y, w, h = rect
+    height, width = frame_shape[:2]
+
+    w = max(1, min(int(w), width))
+    h = max(1, min(int(h), height))
+    x = max(0, min(int(x), width - w))
+    y = max(0, min(int(y), height - h))
+    return (x, y, w, h)

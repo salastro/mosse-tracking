@@ -2,6 +2,7 @@ import argparse
 import cv2
 import numpy as np
 from utils import *
+from kalman import KalmanCA2D
 
 def parse_args():
     parser = argparse.ArgumentParser(description="MOSSE tracking with CLI args")
@@ -10,6 +11,24 @@ def parse_args():
     parser.add_argument("-e", "--eta", type=float, default=0.125, help="Learning rate eta (default: 0.125)")
     parser.add_argument("-s", "--sigma", type=float, default=100.0, help="Gaussian sigma (default: 100)")
     parser.add_argument("--show-spectrum", action="store_true", help="Show FFT spectrum alongside video")
+    parser.add_argument(
+        "--state-estimator",
+        choices=["mosse", "kalman"],
+        default="mosse",
+        help="State estimator: 'mosse' (measurement only) or 'kalman' (Kalman over MOSSE measurements)",
+    )
+    parser.add_argument(
+        "--kalman-process-var",
+        type=float,
+        default=1e-2,
+        help="Kalman process noise variance for constant-acceleration model (default: 1e-2)",
+    )
+    parser.add_argument(
+        "--kalman-measurement-var",
+        type=float,
+        default=25.0,
+        help="Kalman measurement noise variance in pixels^2 (default: 25.0)",
+    )
     return parser.parse_args()
 
 def main():
@@ -19,9 +38,11 @@ def main():
     sigma = args.sigma
     output_path = args.output
     show_spectrum = args.show_spectrum
+    use_kalman = args.state_estimator == "kalman"
 
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS)
+    dt = 1.0 / fps if fps and fps > 0 else 1.0 / 30.0
     fourcc = cv2.VideoWriter_fourcc(*'XVID')
     out = cv2.VideoWriter(output_path, fourcc, fps, 
                           (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
@@ -61,6 +82,17 @@ def main():
         Ai = G * np.conj(np.fft.fft2(fi))
         Bi = np.fft.fft2(fi) * np.conj(np.fft.fft2(fi))
 
+        kalman = None
+        if use_kalman:
+            cx0 = x + w / 2.0
+            cy0 = y + h / 2.0
+            kalman = KalmanCA2D(
+                dt=dt,
+                process_var=args.kalman_process_var,
+                measurement_var=args.kalman_measurement_var,
+            )
+            kalman.initialize(cx0, cy0)
+
         trackers.append({
             "rect": rect,
             "Ai": Ai,
@@ -68,7 +100,8 @@ def main():
             "G": G,
             "wT": wT,
             "hT": hT,
-            "fi": fi
+            "fi": fi,
+            "kalman": kalman,
         })
 
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -89,6 +122,7 @@ def main():
             rect = tracker["rect"]
             Ai, Bi, G = tracker["Ai"], tracker["Bi"], tracker["G"]
             wT, hT = tracker["wT"], tracker["hT"]
+            kalman = tracker["kalman"]
 
             if frameIdx == 1:
                 tracker["Ai"] = eta * Ai
@@ -96,6 +130,18 @@ def main():
             else:
                 H = Ai / Bi
                 x, y, w, h = rect
+
+                # Optional prediction step for search window placement
+                if kalman is not None:
+                    pred_xc, pred_yc = kalman.predict()
+                    pred_rect = (
+                        int(round(pred_xc - w / 2.0)),
+                        int(round(pred_yc - h / 2.0)),
+                        w,
+                        h,
+                    )
+                    x, y, w, h = clamp_rect(pred_rect, grayFrame.shape)
+
                 currPatch = grayFrame[y:y+h, x:x+w]
                 if currPatch.size == 0:
                     continue
@@ -107,7 +153,22 @@ def main():
                 maxR, maxC = np.unravel_index(np.argmax(respNorm), respNorm.shape)
                 dx = int(maxR - hT / 2)
                 dy = int(maxC - wT / 2)
-                rect = (x + dy, y + dx, w, h)
+                meas_rect = clamp_rect((x + dy, y + dx, w, h), grayFrame.shape)
+
+                # Optional correction step: fuse MOSSE measurement into Kalman estimate
+                if kalman is not None:
+                    mx = meas_rect[0] + meas_rect[2] / 2.0
+                    my = meas_rect[1] + meas_rect[3] / 2.0
+                    est_xc, est_yc = kalman.update([mx, my])
+                    rect = clamp_rect((
+                        int(round(est_xc - meas_rect[2] / 2.0)),
+                        int(round(est_yc - meas_rect[3] / 2.0)),
+                        meas_rect[2],
+                        meas_rect[3],
+                    ), grayFrame.shape)
+                else:
+                    rect = meas_rect
+
                 tracker["rect"] = rect
 
                 newPatch = grayFrame[rect[1]:rect[1]+rect[3], rect[0]:rect[0]+rect[2]]

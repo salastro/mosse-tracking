@@ -9,6 +9,7 @@ This project implements a **Minimum Output Sum of Squared Error (MOSSE) correlat
 * Multiple object tracking (select multiple ROIs in the first frame).
 * Adaptive filter update for robustness to appearance changes.
 * Real-time performance using FFT-based convolution.
+* Optional Kalman filtering with constant-acceleration state model (`x, y, vx, vy, ax, ay`).
 * Optional visualization of the FFT spectrum alongside the video.
 * Command-line interface with customizable parameters.
 
@@ -28,7 +29,7 @@ This project implements a **Minimum Output Sum of Squared Error (MOSSE) correlat
 Run the tracker from the command line:
 
 ```bash
-python src/main.py -i input.mp4 -o output.mp4 --eta 0.125 --sigma 100 --show-spectrum
+python src/main.py -i input.mp4 -o output.mp4 --eta 0.125 --sigma 100 --state-estimator kalman --show-spectrum
 ```
 
 ### Arguments
@@ -39,6 +40,9 @@ python src/main.py -i input.mp4 -o output.mp4 --eta 0.125 --sigma 100 --show-spe
 | `-o`, `--output`  | Path to save the output video.                                        | `result.mp4` |
 | `-e`, `--eta`     | Learning rate for adaptive filter update.                             | `0.125`      |
 | `-s`, `--sigma`   | Gaussian sigma used in filter initialization.                         | `100.0`      |
+| `--state-estimator` | State estimation mode: `mosse` only, or `kalman` where MOSSE is the measurement and Kalman is the estimator. | `mosse`      |
+| `--kalman-process-var` | Process noise variance for Kalman filter.                        | `1e-2`       |
+| `--kalman-measurement-var` | Measurement noise variance (pixels²) for Kalman filter.     | `25.0`       |
 | `--show-spectrum` | Display FFT spectrum of the first tracker alongside the video stream. | `False`      |
 
 ---
@@ -54,6 +58,7 @@ python src/main.py -i input.mp4 -o output.mp4 --eta 0.125 --sigma 100 --show-spe
 
    * For each new frame, the filter is applied via FFT to produce a response map.
    * The peak in the response map gives the new object location.
+   * If `--state-estimator kalman` is enabled, MOSSE provides the measurement each frame and Kalman performs prediction + correction for smoother state estimation.
 
 3. **Update**
 
